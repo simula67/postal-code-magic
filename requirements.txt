@@ -12,3 +12,4 @@ tqdm==4.67.1
 tzdata==2024.2
 urllib3==2.3.0
 geopy==2.4.1
+psutil~=6.1.1
