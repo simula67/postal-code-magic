@@ -1,5 +1,3 @@
-.idea/
-
 # Created by https://www.toptal.com/developers/gitignore/api/vim,emacs,python,intellij,pycharm,linux,windows,macos
 # Edit at https://www.toptal.com/developers/gitignore?templates=vim,emacs,python,intellij,pycharm,linux,windows,macos
 
@@ -507,3 +505,10 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/vim,emacs,python,intellij,pycharm,linux,windows,macos
+.idea/
+/canada/CA_full.txt
+/canada/CA_full.csv.zip
+/us/US.zip
+/us/us_zip_codes/
+/us/distances.duckdb
+/us/distances.duckdb.wal
