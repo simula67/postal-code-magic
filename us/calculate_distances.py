@@ -81,7 +81,7 @@ def calculate_distances(zipcodes, conn):
         CREATE TABLE IF NOT EXISTS {RESULTS_TABLE} (
             zip1 TEXT,
             zip2 TEXT,
-            distance_km FLOAT
+            distance_miles FLOAT
         )
     """)
 
@@ -101,13 +101,13 @@ def calculate_distances(zipcodes, conn):
         coord2 = zipcodes[zipcodes["zipcode"] == zip2][["latitude", "longitude"]].values[0]
 
         # Calculate geodesic distance
-        distance_km = geodesic(coord1, coord2).miles
+        distance_miles = geodesic(coord1, coord2).miles
 
         # Save to the database
         conn.execute(f"""
-            INSERT INTO {RESULTS_TABLE} (zip1, zip2, distance_km)
+            INSERT INTO {RESULTS_TABLE} (zip1, zip2, distance_miles)
             VALUES (?, ?, ?)
-        """, [zip1, zip2, distance_km])
+        """, [zip1, zip2, distance_miles])
 
         # Mark pair as processed
         conn.execute(f"UPDATE {PAIRS_TABLE} SET processed = TRUE WHERE zip1 = ? AND zip2 = ?", [zip1, zip2])
