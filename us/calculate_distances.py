@@ -59,15 +59,17 @@ def initialize_pairs_table(zipcodes, conn):
         )
     """)
 
+    total_pairs = len(zipcodes) * (len(zipcodes) - 1) // 2
     # Check if table already has pairs
-    existing_count = conn.execute(f"SELECT COUNT(*) FROM {PAIRS_TABLE}").fetchone()[0]
+    existing_count_zip_pairs = conn.execute(f"SELECT COUNT(*) FROM {PAIRS_TABLE}").fetchone()[0]
+    existing_count_results = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE}").fetchone()[0]
+    existing_count = existing_count_zip_pairs + existing_count_results
     if existing_count == 0:
         logging.info("Generating and saving all unique pairs...")
         pairs = itertools.combinations(zipcodes["zipcode"], 2)
-        total_pairs = len(zipcodes) * (len(zipcodes) - 1) // 2
         batch = []
 
-        for pair in tqdm(pairs, desc="Generating ZIP code pairs", total=total_pairs, unit="pair"):
+        for pair in tqdm(pairs, desc="Generating ZIP code pairs", total=total_pairs, unit=" pair"):
             batch.append(pair)
             if len(batch) >= 10000:  # Batch insert every 10,000 pairs
                 check_disk_space()
@@ -76,11 +78,15 @@ def initialize_pairs_table(zipcodes, conn):
         if batch:
             check_disk_space()
             conn.executemany(f"INSERT INTO {PAIRS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
-
+        conn.commit()
         logging.info("All unique pairs saved to database.")
+    elif existing_count == total_pairs:
+        logging.info(f"Tables already contains all {total_pairs} unique pairs. Skipping generation.")
+        return
     else:
-        logging.info(f"Resuming from {existing_count} existing pairs.")
-
+        logging.info(f"Cannot resume from {existing_count} existing pairs.")
+        raise Exception(f'Existing pairs table {existing_count} incomplete (should be {total_pairs}). Please delete the table and try again.')
+    logging.info(f"Initialized {total_pairs} ZIP code pairs.")
 
 def calculate_distances(zipcodes, conn, batch_size=1000):
     """Calculate distances and save them to the database."""
@@ -100,7 +106,7 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
     total_pairs = conn.execute(f"SELECT COUNT(*) FROM {PAIRS_TABLE}").fetchone()[0]
 
     # Process pairs in batches
-    with tqdm(total=total_pairs, desc="Processing ZIP code pairs", unit="pair") as pbar:
+    with tqdm(total=(total_pairs/batch_size), desc="Processing ZIP code pairs", unit=" batches") as pbar:
         while total_pairs > 0:
             check_disk_space()
 
