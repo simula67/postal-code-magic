@@ -115,10 +115,11 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
 
             for zip1, zip2 in unprocessed_pairs:
                 # Get coordinates for both ZIP codes
-                coord1 = conn.execute(f"SELECT latitude, longitude FROM zipcodes WHERE zipcode = ?", (zip1,)).fetchone()
-                coord2 = conn.execute(f"SELECT latitude, longitude FROM zipcodes WHERE zipcode = ?", (zip2,)).fetchone()
 
-                if coord1 and coord2:
+                coord1 = zipcodes.loc[zipcodes["zipcode"] == int(zip1), ["latitude", "longitude"]].iloc[0].values
+                coord2 = zipcodes.loc[zipcodes["zipcode"] == int(zip2), ["latitude", "longitude"]].iloc[0].values
+
+                if coord1 is not None and coord2 is not None:
                     # Calculate geodesic distance
                     distance_miles = geodesic(coord1, coord2).miles
 
