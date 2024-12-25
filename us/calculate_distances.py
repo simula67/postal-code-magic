@@ -1,7 +1,10 @@
 import itertools
 import logging
 import os
+import platform
 import sqlite3
+import subprocess
+
 import pandas as pd
 from geopy.distance import geodesic
 from tqdm import tqdm
@@ -19,6 +22,58 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler()],
 )
+
+
+class KeepAwake:
+    """
+    A class to manage system wakefulness using OS-specific settings.
+    """
+
+    def __init__(self):
+        self.os_type = platform.system()
+
+    def start(self):
+        """Start the keep-awake mechanism based on the OS."""
+        if self.os_type == "Windows":
+            self._prevent_sleep_windows()
+        elif self.os_type == "Darwin":  # macOS
+            self._prevent_sleep_macos()
+        elif self.os_type == "Linux":
+            self._prevent_sleep_linux()
+        else:
+            logging.warning("Unsupported OS for keep-awake. The system might go idle.")
+
+    def stop(self):
+        """Stop the keep-awake mechanism if necessary."""
+        if self.os_type == "Darwin" and hasattr(self, "caffeinate_process"):
+            self.caffeinate_process.terminate()
+
+    def _prevent_sleep_windows(self):
+        """Use ctypes to prevent sleep on Windows."""
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetThreadExecutionState(
+                0x80000000 | 0x00000001
+            )  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            logging.info("Windows sleep prevention activated.")
+        except Exception as e:
+            logging.warning(f"Failed to prevent sleep on Windows: {e}")
+
+    def _prevent_sleep_macos(self):
+        """Run caffeinate command to prevent sleep on macOS."""
+        try:
+            self.caffeinate_process = subprocess.Popen(["caffeinate"])
+            logging.info("macOS caffeinate activated.")
+        except Exception as e:
+            logging.warning(f"Failed to prevent sleep on macOS: {e}")
+
+    def _prevent_sleep_linux(self):
+        """Prevent sleep on Linux using xdg-screensaver or equivalent."""
+        try:
+            subprocess.run(["xdg-screensaver", "reset"], check=True)
+            logging.info("Linux sleep prevention activated.")
+        except Exception as e:
+            logging.warning(f"Failed to prevent sleep on Linux: {e}")
 
 
 def check_disk_space():
@@ -59,7 +114,6 @@ def initialize_pairs_table(zipcodes, conn):
         )
     """)
 
-
     total_pairs = len(zipcodes) * (len(zipcodes) - 1) // 2
     # Check if table already has pairs
     existing_count = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE}").fetchone()[0]
@@ -98,25 +152,12 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
     logging.info("Calculating distances between ZIP code pairs...")
     check_disk_space()
 
-    # Ensure results table exists
-    conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {RESULTS_TABLE} (
-            zip1 TEXT,
-            zip2 TEXT,
-            distance_miles FLOAT
-        )
-    """)
-
     # Get the total number of pairs to process
     total_pairs = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE} WHERE distance_miles IS NULL").fetchone()[0]
 
-    # Process pairs in batches
-    total_floored_pairs = total_pairs // batch_size
-    if total_pairs % batch_size == 0:
-        num_batches = total_floored_pairs
-    else:
-        num_batches = total_floored_pairs + 1
-    with tqdm(total=num_batches, desc="Processing ZIP code pairs", unit=" batches") as pbar:
+    num_batches = (total_pairs + batch_size - 1) // batch_size  # Calculate the number of batches
+
+    with tqdm(total=num_batches, desc="Processing ZIP code pairs", unit=" batches", dynamic_ncols=True) as pbar:
         while total_pairs > 0:
             check_disk_space()
 
@@ -151,15 +192,19 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
                 """, processed_pairs)
 
             conn.commit()  # Commit after processing a batch
-            processed_pairs_count = len(processed_pairs)
-            pbar.update(processed_pairs_count)
+            pbar.update(1)
 
             # Update total pairs count
-            total_pairs -= processed_pairs_count
+            total_pairs -= len(processed_pairs)
 
 
 def main():
     """Main function to orchestrate the distance calculation."""
+
+    # Initialize keep-awake mechanism
+    keep_awake = KeepAwake()
+    keep_awake.start()
+
     logging.info("Starting postal code distance calculations...")
 
     try:
