@@ -11,7 +11,6 @@ import psutil  # For disk space monitoring
 ZIPCODES_FILE = "us_zipcodes.csv"
 RESULTS_DB = "distances.db"
 RESULTS_TABLE = "zip_distances"
-PAIRS_TABLE = "zip_pairs"
 DISK_SPACE_THRESHOLD_MB = 10240  # Minimum free disk space in MB
 
 # Logging setup
@@ -51,19 +50,19 @@ def initialize_pairs_table(zipcodes, conn):
     logging.info("Initializing or resuming ZIP code pairs...")
     check_disk_space()
 
-    # Ensure pairs table exists
+    # Ensure pairs table exists and add distance_miles column
     conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {PAIRS_TABLE} (
+        CREATE TABLE IF NOT EXISTS {RESULTS_TABLE} (
             zip1 TEXT,
-            zip2 TEXT
+            zip2 TEXT,
+            distance_miles FLOAT DEFAULT NULL
         )
     """)
 
+
     total_pairs = len(zipcodes) * (len(zipcodes) - 1) // 2
     # Check if table already has pairs
-    existing_count_zip_pairs = conn.execute(f"SELECT COUNT(*) FROM {PAIRS_TABLE}").fetchone()[0]
-    existing_count_results = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE}").fetchone()[0]
-    existing_count = existing_count_zip_pairs + existing_count_results
+    existing_count = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE}").fetchone()[0]
     if existing_count == 0:
         logging.info("Generating and saving all unique pairs...")
         pairs = itertools.combinations(zipcodes["zipcode"], 2)
@@ -73,20 +72,26 @@ def initialize_pairs_table(zipcodes, conn):
             batch.append(pair)
             if len(batch) >= 10000:  # Batch insert every 10,000 pairs
                 check_disk_space()
-                conn.executemany(f"INSERT INTO {PAIRS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
+                conn.executemany(f"INSERT INTO {RESULTS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
                 batch = []
         if batch:
             check_disk_space()
-            conn.executemany(f"INSERT INTO {PAIRS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
+            conn.executemany(f"INSERT INTO {RESULTS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
+
+        logging.info(f"Creating indexes on {RESULTS_TABLE} table for zips.")
+        # Create index for zip1 and zip2
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_zip1_zip2 ON {RESULTS_TABLE} (zip1, zip2)")
         conn.commit()
         logging.info("All unique pairs saved to database.")
     elif existing_count == total_pairs:
-        logging.info(f"Tables already contains all {total_pairs} unique pairs. Skipping generation.")
+        logging.info(f"Tables already contain all {total_pairs} unique pairs. Skipping generation.")
         return
     else:
         logging.info(f"Cannot resume from {existing_count} existing pairs.")
-        raise Exception(f'Existing pairs table {existing_count} incomplete (should be {total_pairs}). Please delete the table and try again.')
+        raise Exception(
+            f'Existing pairs table {existing_count} incomplete (should be {total_pairs}). Please delete the table and try again.')
     logging.info(f"Initialized {total_pairs} ZIP code pairs.")
+
 
 def calculate_distances(zipcodes, conn, batch_size=1000):
     """Calculate distances and save them to the database."""
@@ -103,47 +108,54 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
     """)
 
     # Get the total number of pairs to process
-    total_pairs = conn.execute(f"SELECT COUNT(*) FROM {PAIRS_TABLE}").fetchone()[0]
+    total_pairs = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE} WHERE distance_miles IS NULL").fetchone()[0]
 
     # Process pairs in batches
-    with tqdm(total=(total_pairs/batch_size), desc="Processing ZIP code pairs", unit=" batches") as pbar:
+    total_floored_pairs = total_pairs // batch_size
+    if total_pairs % batch_size == 0:
+        num_batches = total_floored_pairs
+    else:
+        num_batches = total_floored_pairs + 1
+    with tqdm(total=num_batches, desc="Processing ZIP code pairs", unit=" batches") as pbar:
         while total_pairs > 0:
             check_disk_space()
 
             # Retrieve a batch of pairs
             unprocessed_pairs = conn.execute(f"""
-                SELECT zip1, zip2 FROM {PAIRS_TABLE} LIMIT {batch_size}
+                SELECT zip1, zip2 FROM {RESULTS_TABLE} WHERE distance_miles IS NULL LIMIT {batch_size}
             """).fetchall()
 
             if not unprocessed_pairs:
                 logging.info("All pairs have been processed.")
                 break
 
+            # Prepare a list of tuples for the update
+            processed_pairs = []
             for zip1, zip2 in unprocessed_pairs:
                 # Get coordinates for both ZIP codes
-
                 coord1 = zipcodes.loc[zipcodes["zipcode"] == int(zip1), ["latitude", "longitude"]].iloc[0].values
                 coord2 = zipcodes.loc[zipcodes["zipcode"] == int(zip2), ["latitude", "longitude"]].iloc[0].values
 
                 if coord1 is not None and coord2 is not None:
                     # Calculate geodesic distance
                     distance_miles = geodesic(coord1, coord2).miles
+                    # Append the update statement
+                    processed_pairs.append((distance_miles, zip1, zip2))
 
-                    # Save to the database
-                    conn.execute(f"""
-                        INSERT INTO {RESULTS_TABLE} (zip1, zip2, distance_miles)
-                        VALUES (?, ?, ?)
-                    """, (zip1, zip2, distance_miles))
-
-                # Delete the pair from the table after processing
-                conn.execute(f"DELETE FROM {PAIRS_TABLE} WHERE zip1 = ? AND zip2 = ?", (zip1, zip2))
+            # Perform the update for all pairs in one go
+            if processed_pairs:
+                conn.executemany(f"""
+                    UPDATE {RESULTS_TABLE}
+                    SET distance_miles = ?
+                    WHERE zip1 = ? AND zip2 = ?
+                """, processed_pairs)
 
             conn.commit()  # Commit after processing a batch
-            processed_pairs = len(unprocessed_pairs)
-            pbar.update(processed_pairs)
+            processed_pairs_count = len(processed_pairs)
+            pbar.update(processed_pairs_count)
 
             # Update total pairs count
-            total_pairs -= processed_pairs
+            total_pairs -= processed_pairs_count
 
 
 def main():
