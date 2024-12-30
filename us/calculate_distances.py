@@ -9,10 +9,10 @@ import pandas as pd
 from geopy.distance import geodesic
 from tqdm import tqdm
 
-# File paths
-ZIPCODES_FILE = "us_zipcodes.csv"
-RESULTS_DB = "distances.db"
-RESULTS_TABLE = "zip_distances"
+# Constants
+POSTAL_CODES_FILE = "us_zipcodes.csv"
+DISTANCES_DB_FILENAME = "distances.db"
+DISTANCES_TABLE = "zip_distances"
 DISK_SPACE_THRESHOLD_MB = 10240  # Minimum free disk space in MB
 
 # Logging setup
@@ -77,20 +77,20 @@ def check_disk_space():
     """Check disk space for the database and temporary directory locations."""
     checked_mount_points = set()
 
-    def get_mount_point(path):
+    def get_mount_point(check_path):
         """Get the mount point for a given path."""
-        while not os.path.ismount(path):
-            path = os.path.dirname(path)
-        return path
+        while not os.path.ismount(check_path):
+            check_path = os.path.dirname(check_path)
+        return check_path
 
     # Paths to check
     paths_to_check = [
-        os.path.abspath(RESULTS_DB),  # Path for the database
+        os.path.abspath(DISTANCES_DB_FILENAME),  # Path for the database
         os.getenv("TMPDIR", "/tmp"),  # Path for the temporary directory
     ]
 
-    for path in paths_to_check:
-        mount_point = get_mount_point(path)
+    for path_to_check in paths_to_check:
+        mount_point = get_mount_point(path_to_check)
 
         # Skip if the mount point has already been checked
         if mount_point in checked_mount_points:
@@ -117,14 +117,14 @@ def check_disk_space():
 def load_zipcodes():
     """Load ZIP codes and their coordinates."""
     check_disk_space()
-    if not os.path.exists(ZIPCODES_FILE):
-        logging.error(f"ZIP codes file '{ZIPCODES_FILE}' not found.")
-        raise FileNotFoundError(f"{ZIPCODES_FILE} not found.")
+    if not os.path.exists(POSTAL_CODES_FILE):
+        logging.error(f"ZIP codes file '{POSTAL_CODES_FILE}' not found.")
+        raise FileNotFoundError(f"{POSTAL_CODES_FILE} not found.")
 
-    logging.info(f"Loading ZIP codes from '{ZIPCODES_FILE}'...")
-    zipcodes = pd.read_csv(ZIPCODES_FILE)
+    logging.info(f"Loading ZIP codes from '{POSTAL_CODES_FILE}'...")
+    zipcodes = pd.read_csv(POSTAL_CODES_FILE)
     if not {"zipcode", "latitude", "longitude"}.issubset(zipcodes.columns):
-        logging.error(f"Missing required columns in '{ZIPCODES_FILE}'.")
+        logging.error(f"Missing required columns in '{POSTAL_CODES_FILE}'.")
         raise ValueError("ZIP codes file must have 'zipcode', 'latitude', and 'longitude' columns.")
 
     logging.info(f"Loaded {len(zipcodes)} ZIP codes.")
@@ -138,7 +138,7 @@ def initialize_pairs_table(zipcodes, conn):
 
     # Ensure pairs table exists and add distance_miles column
     conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {RESULTS_TABLE} (
+        CREATE TABLE IF NOT EXISTS {DISTANCES_TABLE} (
             zip1 TEXT,
             zip2 TEXT,
             distance_miles FLOAT DEFAULT NULL
@@ -147,7 +147,7 @@ def initialize_pairs_table(zipcodes, conn):
 
     total_pairs = len(zipcodes) * (len(zipcodes) - 1) // 2
     # Check if table already has pairs
-    existing_count = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE}").fetchone()[0]
+    existing_count = conn.execute(f"SELECT COUNT(*) FROM {DISTANCES_TABLE}").fetchone()[0]
     if existing_count == 0:
         logging.info("Generating and saving all unique pairs...")
         pairs = itertools.combinations(zipcodes["zipcode"], 2)
@@ -157,11 +157,11 @@ def initialize_pairs_table(zipcodes, conn):
             batch.append(pair)
             if len(batch) >= 10000:  # Batch insert every 10,000 pairs
                 check_disk_space()
-                conn.executemany(f"INSERT INTO {RESULTS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
+                conn.executemany(f"INSERT INTO {DISTANCES_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
                 batch = []
         if batch:
             check_disk_space()
-            conn.executemany(f"INSERT INTO {RESULTS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
+            conn.executemany(f"INSERT INTO {DISTANCES_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
 
         logging.info("All unique pairs saved to database.")
     elif existing_count == total_pairs:
@@ -179,13 +179,13 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
     logging.info("Calculating distances between ZIP code pairs...")
     check_disk_space()
 
-    logging.info(f"Creating indexes on {RESULTS_TABLE} table for zips.")
+    logging.info(f"Creating indexes on {DISTANCES_TABLE} table for zips.")
     # Create index for zip1 and zip2
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_zip1_zip2 ON {RESULTS_TABLE} (zip1, zip2)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_zip1_zip2 ON {DISTANCES_TABLE} (zip1, zip2)")
     conn.commit()
 
     # Get the total number of pairs to process
-    total_pairs = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE} WHERE distance_miles IS NULL").fetchone()[0]
+    total_pairs = conn.execute(f"SELECT COUNT(*) FROM {DISTANCES_TABLE} WHERE distance_miles IS NULL").fetchone()[0]
 
     num_batches = (total_pairs + batch_size - 1) // batch_size  # Calculate the number of batches
 
@@ -194,7 +194,7 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
 
             # Retrieve a batch of pairs
             unprocessed_pairs = conn.execute(f"""
-                SELECT zip1, zip2 FROM {RESULTS_TABLE} WHERE distance_miles IS NULL LIMIT {batch_size}
+                SELECT zip1, zip2 FROM {DISTANCES_TABLE} WHERE distance_miles IS NULL LIMIT {batch_size}
             """).fetchall()
 
             if not unprocessed_pairs:
@@ -217,7 +217,7 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
             # Perform the update for all pairs in one go
             if processed_pairs:
                 conn.executemany(f"""
-                    UPDATE {RESULTS_TABLE}
+                    UPDATE {DISTANCES_TABLE}
                     SET distance_miles = ?
                     WHERE zip1 = ? AND zip2 = ?
                 """, processed_pairs)
@@ -251,7 +251,7 @@ def main():
         zipcodes = load_zipcodes()
 
         # Connect to SQLite database
-        conn = sqlite3.connect(RESULTS_DB)
+        conn = sqlite3.connect(DISTANCES_DB_FILENAME)
 
         # Initialize or resume ZIP code pairs table
         initialize_pairs_table(zipcodes, conn)
