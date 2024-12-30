@@ -8,7 +8,6 @@ import subprocess
 import pandas as pd
 from geopy.distance import geodesic
 from tqdm import tqdm
-import psutil  # For disk space monitoring
 
 # File paths
 ZIPCODES_FILE = "us_zipcodes.csv"
@@ -78,10 +77,12 @@ class KeepAwake:
 
 def check_disk_space():
     """Check available disk space and raise an error if it's below the threshold."""
-    free_space = psutil.disk_usage('/').free / (1024 * 1024)  # Convert to MB
+    statvfs = os.statvfs('/home')  # Get filesystem stats for the root directory
+    free_space = (statvfs.f_frsize * statvfs.f_bavail) / (1024 * 1024)  # Convert to MB
+
     if free_space < DISK_SPACE_THRESHOLD_MB:
         logging.error(f"Low disk space: {free_space:.2f} MB available. Threshold is {DISK_SPACE_THRESHOLD_MB} MB.")
-        raise Exception("Insufficient disk space. Please free up space and try again.")
+        raise Exception(f"Insufficient disk space( {free_space:.2f} MB < {DISK_SPACE_THRESHOLD_MB} MB. Please free up space and try again.")
 
 
 def load_zipcodes():
@@ -196,7 +197,14 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
 
             # Update total pairs count
             total_pairs -= len(processed_pairs)
-
+    # Drop index to save space after processing
+    logging.info(f"Dropping index idx_zip1_zip2 to save space.")
+    conn.execute("DROP INDEX IF EXISTS idx_zip1_zip2")
+    conn.commit()
+    logging.info("Index dropped successfully.") 
+    logging.info("Running VACUUM to compact the database...")
+    conn.execute("VACUUM")
+    logging.info("Database space has been permanently reduced.")
 
 def main():
     """Main function to orchestrate the distance calculation."""
@@ -232,3 +240,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
