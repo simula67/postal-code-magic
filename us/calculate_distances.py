@@ -77,7 +77,7 @@ class KeepAwake:
 
 def check_disk_space():
     """Check available disk space and raise an error if it's below the threshold."""
-    statvfs = os.statvfs('/home')  # Get filesystem stats for the root directory
+    statvfs = os.statvfs('/')  # Get filesystem stats for the root directory
     free_space = (statvfs.f_frsize * statvfs.f_bavail) / (1024 * 1024)  # Convert to MB
 
     if free_space < DISK_SPACE_THRESHOLD_MB:
@@ -133,10 +133,6 @@ def initialize_pairs_table(zipcodes, conn):
             check_disk_space()
             conn.executemany(f"INSERT INTO {RESULTS_TABLE} (zip1, zip2) VALUES (?, ?)", batch)
 
-        logging.info(f"Creating indexes on {RESULTS_TABLE} table for zips.")
-        # Create index for zip1 and zip2
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_zip1_zip2 ON {RESULTS_TABLE} (zip1, zip2)")
-        conn.commit()
         logging.info("All unique pairs saved to database.")
     elif existing_count == total_pairs:
         logging.info(f"Tables already contain all {total_pairs} unique pairs. Skipping generation.")
@@ -152,6 +148,11 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
     """Calculate distances and save them to the database."""
     logging.info("Calculating distances between ZIP code pairs...")
     check_disk_space()
+
+    logging.info(f"Creating indexes on {RESULTS_TABLE} table for zips.")
+    # Create index for zip1 and zip2
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_zip1_zip2 ON {RESULTS_TABLE} (zip1, zip2)")
+    conn.commit()
 
     # Get the total number of pairs to process
     total_pairs = conn.execute(f"SELECT COUNT(*) FROM {RESULTS_TABLE} WHERE distance_miles IS NULL").fetchone()[0]
