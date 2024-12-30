@@ -24,9 +24,7 @@ logging.basicConfig(
 
 
 class KeepAwake:
-    """
-    A class to manage system wakefulness using OS-specific settings.
-    """
+    """A class to manage system wakefulness using OS-specific settings."""
 
     def __init__(self):
         self.os_type = platform.system()
@@ -76,17 +74,49 @@ class KeepAwake:
 
 
 def check_disk_space():
-    """Check available disk space and raise an error if it's below the threshold."""
-    statvfs = os.statvfs('/')  # Get filesystem stats for the root directory
-    free_space = (statvfs.f_frsize * statvfs.f_bavail) / (1024 * 1024)  # Convert to MB
+    """Check disk space for the database and temporary directory locations."""
+    checked_mount_points = set()
 
-    if free_space < DISK_SPACE_THRESHOLD_MB:
-        logging.error(f"Low disk space: {free_space:.2f} MB available. Threshold is {DISK_SPACE_THRESHOLD_MB} MB.")
-        raise Exception(f"Insufficient disk space( {free_space:.2f} MB < {DISK_SPACE_THRESHOLD_MB} MB. Please free up space and try again.")
+    def get_mount_point(path):
+        """Get the mount point for a given path."""
+        while not os.path.ismount(path):
+            path = os.path.dirname(path)
+        return path
+
+    # Paths to check
+    paths_to_check = [
+        os.path.abspath(RESULTS_DB),  # Path for the database
+        os.getenv("TMPDIR", "/tmp"),  # Path for the temporary directory
+    ]
+
+    for path in paths_to_check:
+        mount_point = get_mount_point(path)
+
+        # Skip if the mount point has already been checked
+        if mount_point in checked_mount_points:
+            continue
+
+        # Check the free space on the mount point
+        statvfs = os.statvfs(mount_point)
+        free_space = (statvfs.f_frsize * statvfs.f_bavail) / (1024 * 1024)  # Convert to MB
+
+        if free_space < DISK_SPACE_THRESHOLD_MB:
+            logging.error(
+                f"Low disk space on mount point {mount_point}: {free_space:.2f} MB available. "
+                f"Threshold is {DISK_SPACE_THRESHOLD_MB} MB."
+            )
+            raise Exception(
+                f"Insufficient disk space on {mount_point} ({free_space:.2f} MB < {DISK_SPACE_THRESHOLD_MB} MB). "
+                "Please free up space and try again."
+            )
+
+        # Mark this mount point as checked
+        checked_mount_points.add(mount_point)
 
 
 def load_zipcodes():
     """Load ZIP codes and their coordinates."""
+    check_disk_space()
     if not os.path.exists(ZIPCODES_FILE):
         logging.error(f"ZIP codes file '{ZIPCODES_FILE}' not found.")
         raise FileNotFoundError(f"{ZIPCODES_FILE} not found.")
@@ -202,10 +232,11 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
     logging.info(f"Dropping index idx_zip1_zip2 to save space.")
     conn.execute("DROP INDEX IF EXISTS idx_zip1_zip2")
     conn.commit()
-    logging.info("Index dropped successfully.") 
+    logging.info("Index dropped successfully.")
     logging.info("Running VACUUM to compact the database...")
     conn.execute("VACUUM")
     logging.info("Database space has been permanently reduced.")
+
 
 def main():
     """Main function to orchestrate the distance calculation."""
@@ -241,4 +272,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
