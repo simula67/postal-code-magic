@@ -191,7 +191,6 @@ def calculate_distances(zipcodes, conn, batch_size=1000):
 
     with tqdm(total=num_batches, desc="Processing ZIP code pairs", unit=" batches", dynamic_ncols=True) as pbar:
         while total_pairs > 0:
-            check_disk_space()
 
             # Retrieve a batch of pairs
             unprocessed_pairs = conn.execute(f"""
